@@ -35,3 +35,39 @@
 
 ## 📦 Cài đặt local
 
+
+Ứng dụng sẽ chạy tại: `http://localhost:8501`
+
+## 🎯 Cách sử dụng
+
+1. Chọn cryptocurrency từ dropdown (BTC, ETH, BNB...)
+2. Chọn khung thời gian (1h, 4h, 1d, 1w)
+3. Điều chỉnh tham số VSA:
+   - Volume MA Length
+   - Strong/Spike thresholds
+4. Nhấn **"Tải dữ liệu"** để vẽ biểu đồ
+
+## 📸 Screenshots
+
+_TODO: Thêm screenshots sau khi deploy_
+
+## 🔑 API Key
+
+Không cần API key! Ứng dụng sử dụng Binance Public API (miễn phí).
+
+## 📝 License
+
+MIT License - xem file [LICENSE](LICENSE) để biết thêm chi tiết.
+
+## 👨‍💻 Author
+
+**Your Name**
+- GitHub: [@YOUR_USERNAME](https://github.com/YOUR_USERNAME)
+
+## 🙏 Acknowledgments
+
+- Dữ liệu từ [Binance API](https://binance-docs.github.io/apidocs/)
+- Framework: [Streamlit](https://streamlit.io/)
+- Charts: [Plotly](https://plotly.com/)
+
+
