@@ -1,9 +1,10 @@
 import streamlit as st
-import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ================================================================================
 # CẤU HÌNH STREAMLIT
@@ -23,35 +24,28 @@ st.markdown("---")
 # SIDEBAR - CONFIGURATION
 # ================================================================================
 
-st.sidebar.header("⚙️ Cấu hình")
+st.sidebar.header("⚙️ Cấu hình Google Sheets")
 
-# Chọn symbol
-symbol_options = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT', 
-                  'XRPUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT', 'AVAXUSDT']
-symbol = st.sidebar.selectbox("🪙 Chọn Cryptocurrency:", symbol_options, index=0)
+# Google Sheets ID
+sheet_id = st.sidebar.text_input(
+    "📋 Google Sheets ID:",
+    value="",  # ← PASTE SHEET_ID VÀO ĐÂY
+    help="Lấy từ URL Google Sheets: https://docs.google.com/spreadsheets/d/SHEET_ID/edit"
+)
 
-# Chọn timeframe
-timeframe_options = {
-    '1 giờ': '1h',
-    '4 giờ (H4)': '4h',
-    '1 ngày': '1d',
-    '1 tuần': '1w'
-}
-timeframe_label = st.sidebar.selectbox("⏰ Chọn khung thời gian:", list(timeframe_options.keys()), index=1)
-timeframe = timeframe_options[timeframe_label]
+sheet_name = st.sidebar.text_input(
+    "📄 Tên Google Sheets:",
+    value="DEFI",
+    help="Tên Google Sheets (VD: DEFI, BTC, ETH...)"
+)
 
-# Số lượng nến
-limit = st.sidebar.slider("📊 Số lượng nến:", min_value=50, max_value=1000, value=500, step=50)
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Cấu hình VSA")
 
 # VSA Config
-st.sidebar.subheader("🎨 Cấu hình VSA")
 length_ma = st.sidebar.slider("Volume MA Length:", 10, 50, 20)
-
-# Volume Change Threshold
-st.sidebar.subheader("📈 Ngưỡng Volume Change")
 vol_strong = st.sidebar.slider("Strong threshold (%):", 20, 100, 50)
 vol_spike = st.sidebar.slider("Spike threshold (%):", 10, 50, 20)
-
 show_volume_ma = st.sidebar.checkbox("Hiển thị Volume MA", value=True)
 chart_height = st.sidebar.slider("Chiều cao biểu đồ:", 600, 1200, 900, 50)
 
@@ -76,41 +70,29 @@ VOLUME_CHG_THRESHOLD = {
 }
 
 # ================================================================================
-# FUNCTIONS
+# FUNCTIONS - ĐỌC TỪ GOOGLE SHEETS
 # ================================================================================
 
-@st.cache_data(ttl=300)
-def get_binance_data(symbol, interval, limit):
-    """Lấy dữ liệu từ Binance API"""
-    url = 'https://api.binance.com/api/v3/klines'
-    params = {
-        'symbol': symbol,
-        'interval': interval,
-        'limit': limit
-    }
-    
+@st.cache_data(ttl=600)
+def get_google_sheets_data(sheet_id, sheet_name):
+    """Đọc dữ liệu từ Google Sheets công khai"""
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        # Dùng public access (không cần credentials)
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
         
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'Open', 'High', 'Low', 'Close', 'Volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-            'taker_buy_quote', 'ignore'
-        ])
+        df = pd.read_csv(url)
         
-        df['Date'] = pd.to_datetime(df['timestamp'], unit='ms')
-        
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            df[col] = df[col].astype(float)
-        
-        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        # Kiểm tra các cột cần thiết
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"❌ Sheet thiếu các cột cần thiết: {required_cols}")
+            return None
         
         return df
         
     except Exception as e:
-        st.error(f"❌ Lỗi khi lấy dữ liệu: {e}")
+        st.error(f"❌ Lỗi khi đọc Google Sheets: {e}")
+        st.info("💡 Đảm bảo Google Sheets đã được chia sẻ công khai (Anyone with the link)")
         return None
 
 def format_volume(volume):
@@ -127,11 +109,28 @@ def format_volume(volume):
         return f"{volume:.0f}"
 
 def process_dataframe(df):
+    """Xử lý và làm sạch dữ liệu"""
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(',', '')
+                .str.replace('$', '')
+                .str.replace(' ', '')
+                .replace('', np.nan)
+            )
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
     df['Vol Chg'] = df['Volume'].pct_change() * 100
     df = df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
+    
     return df.reset_index(drop=True)
 
 def analyze_vsa_volume(df, config):
+    """Phân loại volume theo VSA"""
     df['Volume_MA'] = df['Volume'].rolling(window=config['length_ma'], min_periods=1).mean()
     cond = [
         df['Volume'] >= df['Volume_MA'] * config['ratio_ultra'],
@@ -147,6 +146,7 @@ def analyze_vsa_volume(df, config):
     return df
 
 def analyze_volume_change(df, threshold):
+    """Phân loại màu sắc cho volume change"""
     def classify_vol_chg(vol_chg):
         if pd.isna(vol_chg):
             return '#808080'
@@ -165,7 +165,8 @@ def analyze_volume_change(df, threshold):
     df['Vol_Chg_Color'] = df['Vol Chg'].apply(classify_vol_chg)
     return df
 
-def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_ma, height):
+def create_candlestick_chart(df, title, config, vol_threshold, show_ma, height):
+    """Vẽ biểu đồ 3 panels"""
     df = analyze_vsa_volume(df, config)
     df = analyze_volume_change(df, vol_threshold)
 
@@ -174,9 +175,10 @@ def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_
         shared_xaxes=True,
         vertical_spacing=0.02,
         row_heights=[0.5, 0.25, 0.25],
-        subplot_titles=(f'{symbol} - {timeframe}', 'Volume Change %', 'Volume (VSA)')
+        subplot_titles=(f'Giá {title}', 'Volume Change %', 'Volume (VSA)')
     )
 
+    # Panel 1: Nến VSA
     for vsa_level, color in [
         ('Ultra High', '#9C27B0'), ('Very High', '#F44336'),
         ('High', '#FF9800'), ('Normal', '#4CAF50'),
@@ -187,7 +189,7 @@ def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_
             continue
         
         hover_text = [
-            f"<b>Ngày:</b> {row['Date'].strftime('%Y-%m-%d %H:%M')}<br>"
+            f"<b>Ngày:</b> {row['Date'].strftime('%Y-%m-%d')}<br>"
             f"<b>Open:</b> ${row['Open']:,.2f}<br>"
             f"<b>High:</b> ${row['High']:,.2f}<br>"
             f"<b>Low:</b> ${row['Low']:,.2f}<br>"
@@ -206,6 +208,7 @@ def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_
             text=hover_text, hoverinfo='text', showlegend=False
         ), row=1, col=1)
 
+    # Panel 2: Volume Change %
     fig.add_trace(go.Bar(
         x=df['Date'], y=df['Vol Chg'],
         marker_color=df['Vol_Chg_Color'],
@@ -222,6 +225,7 @@ def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_
         row=2, col=1
     )
 
+    # Panel 3: Volume VSA
     fig.add_trace(go.Bar(
         x=df['Date'], y=df['Volume'],
         marker_color=df['VSA_Color'],
@@ -260,45 +264,57 @@ def create_candlestick_chart(df, symbol, timeframe, config, vol_threshold, show_
 # ================================================================================
 
 if st.sidebar.button("🔄 Tải dữ liệu", type="primary"):
-    with st.spinner(f"Đang tải dữ liệu {symbol} khung {timeframe}..."):
-        df = get_binance_data(symbol, timeframe, limit)
-        
-        if df is not None and len(df) > 0:
-            df = process_dataframe(df)
+    if not sheet_id:
+        st.warning("⚠️ Vui lòng nhập Google Sheets ID")
+    else:
+        with st.spinner(f"Đang tải dữ liệu từ Google Sheets '{sheet_name}'..."):
+            df = get_google_sheets_data(sheet_id, sheet_name)
             
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("💰 Giá hiện tại", f"${df['Close'].iloc[-1]:,.2f}")
-            with col2:
-                st.metric("📈 Vol Chg", f"{df['Vol Chg'].iloc[-1]:.1f}%")
-            with col3:
-                st.metric("📊 Cao nhất", f"${df['High'].max():,.2f}")
-            with col4:
-                st.metric("📉 Thấp nhất", f"${df['Low'].min():,.2f}")
-            
-            st.markdown("---")
-            
-            fig = create_candlestick_chart(
-                df, symbol, timeframe,
-                VSA_CONFIG, VOLUME_CHG_THRESHOLD,
-                show_volume_ma, chart_height
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("📋 Xem dữ liệu chi tiết"):
-                st.dataframe(df.tail(50), use_container_width=True)
-        else:
-            st.error("❌ Không thể lấy dữ liệu từ Binance API")
+            if df is not None and len(df) > 0:
+                df = process_dataframe(df)
+                
+                if len(df) > 0:
+                    # Thống kê
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("💰 Giá hiện tại", f"${df['Close'].iloc[-1]:,.2f}")
+                    with col2:
+                        st.metric("📈 Vol Chg", f"{df['Vol Chg'].iloc[-1]:.1f}%")
+                    with col3:
+                        st.metric("📊 Cao nhất", f"${df['High'].max():,.2f}")
+                    with col4:
+                        st.metric("📉 Thấp nhất", f"${df['Low'].min():,.2f}")
+                    
+                    st.markdown("---")
+                    
+                    # Vẽ biểu đồ
+                    fig = create_candlestick_chart(
+                        df, sheet_name,
+                        VSA_CONFIG, VOLUME_CHG_THRESHOLD,
+                        show_volume_ma, chart_height
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Bảng dữ liệu
+                    with st.expander("📋 Xem dữ liệu chi tiết"):
+                        st.dataframe(df.tail(50), use_container_width=True)
+                else:
+                    st.error("❌ Không có dữ liệu hợp lệ sau khi xử lý")
 
+# Hướng dẫn sử dụng
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📖 Hướng dẫn")
 st.sidebar.markdown("""
-1. Chọn cryptocurrency
-2. Chọn khung thời gian
-3. Điều chỉnh các tham số VSA
+1. Nhập **Google Sheets ID**
+2. Nhập **Tên Sheet** (VD: DEFI)
+3. Điều chỉnh tham số VSA
 4. Nhấn **Tải dữ liệu**
+
+**Lưu ý:**
+- Google Sheets phải được chia sẻ công khai
+- Sheet phải có đủ cột: Date, Open, High, Low, Close, Volume
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 Dữ liệu được cập nhật real-time từ Binance API")
+st.sidebar.info("💡 Dữ liệu từ Google Sheets của bạn")
