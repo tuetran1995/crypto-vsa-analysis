@@ -29,7 +29,7 @@ st.sidebar.header("⚙️ Cấu hình Google Sheets")
 # Google Sheets ID
 sheet_id = st.sidebar.text_input(
     "📋 Google Sheets ID:",
-    value="",  # ← PASTE SHEET_ID VÀO ĐÂY
+    value="https://docs.google.com/spreadsheets/d/18R0gJQmJjEjxUyYMiM2oKN9SpV0qHmzvXJKsPSyGcbA/edit?usp=sharing",  # ← PASTE SHEET_ID VÀO ĐÂY
     help="Lấy từ URL Google Sheets: https://docs.google.com/spreadsheets/d/SHEET_ID/edit"
 )
 
